@@ -7,7 +7,7 @@ setup(
     url='https://github.com/r1tger/msfenum',
     author='Ritger Teunissen',
     author_email='github@ritger.nl',
-    packages=[],
+    packages=['msfenum'],
     # setup_requires=['pytest-runner'],
     # tests_require=['pytest>=3.0.0', 'freezegun'],
     install_requires=[
