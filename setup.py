@@ -11,6 +11,7 @@ setup(
     # setup_requires=['pytest-runner'],
     # tests_require=['pytest>=3.0.0', 'freezegun'],
     install_requires=[
+        'jinja2',
         'msgpack',
         'requests',
         'toml'

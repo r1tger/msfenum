@@ -21,7 +21,7 @@ Future enhancement:
     [ ] Create permuted wordlist using john
     [ ] Enumerate rockyou wordlist & permuted wordlist
 """
-from msfconsolerpc import MSFConsoleRPC
+from .msfconsolerpc import MSFConsoleRPC
 
 from argparse import ArgumentParser
 from jinja2 import Template
