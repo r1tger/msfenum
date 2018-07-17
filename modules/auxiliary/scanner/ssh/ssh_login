@@ -1,6 +1,6 @@
 [datastore]
 BLANK_PASSWORDS=true
-PASS_FILE="@@passwords@@"
+PASS_FILE="{{ passwords }}"
 USER_AS_PASS=true
-USER_FILE="@@users@@"
+USER_FILE="{{ users }}"
 VERBOSE=true

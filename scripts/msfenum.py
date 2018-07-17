@@ -22,13 +22,16 @@ Future enhancement:
     [ ] Enumerate rockyou wordlist & permuted wordlist
 """
 
-from requests import post
-from msgpack import packb, unpackb
 from argparse import ArgumentParser
-from sys import exit
+from jinja2 import Template
+from msgpack import packb, unpackb
 from os import walk
 from os.path import join, relpath, abspath
-from toml import load
+from requests import post
+from shlex import split
+from subprocess import Popen, PIPE
+from sys import exit
+from toml import loads
 
 import logging
 log = logging.getLogger(__name__)
@@ -112,7 +115,7 @@ class MSFConsole(object):
 
 def get_modules(modules_path, module_type):
     """TODO: Docstring for get_module.
-    :returns: TODO
+    :returns: List with created subprocesses
     """
     modules_path = join(modules_path, module_type)
     # Process all files in modules_path
@@ -127,23 +130,28 @@ def get_modules(modules_path, module_type):
 
 def execute_module(rpc, module_type, module_name, filename, rhosts,
                    replacements, threads=2, dry_run=False):
-    """ """
+    """ TODO: Handle different module_types better """
+    with open(filename, 'r') as f:
+        # Open the file and replace any values
+        template = Template(f.read())
+        d = loads(template.render(**replacements))
+
     # Load the datastore options
-    d = load(filename)
     datastore = d['datastore'] if 'datastore' in d else {}
-    modules = []
+    # Loaded modules and processes
+    jobs = []
+    processes = []
 
-    # Replace values in the datastore if needed
-    for key, value in datastore.items():
-        if value in replacements:
-            datastore[key] = replacements[value]
-
-    # Set the global options for ip to scan and number of threads
-    rpc.core.setg(key='THREADS', value=threads)
-
-    # Check if a target is specified for this module
-    if 'target' in d:
-        # Get all services
+    if 'app' in d:
+        # Process this module as an application
+        command = d['app']['command']
+        arguments = d['app']['parameters'] if 'parameters' in d['app'] else ''
+        # Create a new process
+        cmd = split('{c} {a}'.format(c=command, a=arguments))
+        log.info('Executing app: {c}'.format(c=' '.join(cmd)))
+        processes.append(Popen(cmd, stdout=PIPE, stderr=PIPE))
+    elif 'target' in d:
+        # Check if a target is specified for this module
         services = rpc.db.services(xopts={})[b'services']
         # log.debug('Services: {s}'.format(s=services))
         target = d['target']
@@ -162,34 +170,33 @@ def execute_module(rpc, module_type, module_name, filename, rhosts,
             datastore['RPORT'] = s[b'port']
             log.debug('Creating Job for: {n} ({h}:{p})'.format(n=module_name,
                       h=datastore['RHOST'], p=datastore['RPORT']))
-            modules.append((module_type, module_name, datastore))
+            jobs.append((module_type, module_name, datastore))
     else:
         # Add a single module for the configuration when no target is specified
         if 'RHOSTS' not in datastore:
             datastore['RHOSTS'] = rhosts
-        modules.append((module_type, module_name, datastore))
+        jobs.append((module_type, module_name, datastore))
 
-    # Don't do anything if this is a dry run
-    if dry_run:
-        return
-
-    for module_type, module_name, datastore in modules:
-        log.info('Executing module: {n}'.format(n=module_name))
-        # Start a new Job for each prepared module
-        rpc.module.execute(module_type=module_type, module_name=module_name,
-                           datastore=datastore)
+    # Success
+    return jobs, processes
 
 
 def execute_modules(rpc, modules_path, module_type, rhosts, replacements,
                     threads=2, dry_run=False):
-    """TODO: Docstring for execute_modules(rpc.
+    """TODO: Docstring for execute_modules.
     :returns: TODO
     """
+    jobs = []
+    processes = []
     # Find each available module
     for module_name, filename in get_modules(modules_path, module_type):
         # Execute the module
-        execute_module(rpc, module_type, module_name, filename, rhosts,
-                       replacements, threads, dry_run)
+        job, process = execute_module(rpc, module_type, module_name, filename,
+                                      rhosts, replacements, threads, dry_run)
+        jobs.extend(job)
+        processes.extend(process)
+    # Success
+    return jobs, processes
 
 
 def logger(options):
@@ -232,11 +239,15 @@ def parse():
     subparsers = parser.add_subparsers(help='auxiliary|exploit|post',
                                        dest='type')
     subparsers.required = True
-    auxiliary = subparsers.add_parser('auxiliary', help='Auxiliary')
+    auxiliary = subparsers.add_parser('auxiliary',
+                                      help='execute auxiliary modules')
     auxiliary.add_argument('--users', required=True, help='List of users')
     auxiliary.add_argument('--passwords', required=True,
                            help='List of passwords')
-    subparsers.add_parser('exploit', help='Exploit')
+    subparsers.add_parser('exploit', help='execute an exploit')
+    app = subparsers.add_parser('app', help='run an application')
+    app.add_argument('--port', required=True,
+                     help='Port to pass to application')
     # post = subparsers.add_parser('post', help='Post')
     # Parse options
     return parser.parse_args()
@@ -270,18 +281,44 @@ def main():
         # Dictionary with datastore replacements
         replacements = {}
         if 'auxiliary' == module_type:
-            replacements = {'@@users@@': abspath(options.users),
-                            '@@passwords@@': abspath(options.passwords)}
+            replacements = {'users': abspath(options.users),
+                            'passwords': abspath(options.passwords)}
+        if 'app' == module_type:
+            replacements = {'port': options.port,
+                            'rhosts': rhosts}
+
+        jobs = []
+        processes = []
 
         if options.module:
             # Execute a single module
             filename = join(modules_path, options.module)
-            execute_module(msf, module_type, options.module, filename,
-                           rhosts, replacements, threads, dry_run)
+            jobs, processes = execute_module(msf, module_type,
+                                             options.module, filename,
+                                             rhosts, replacements, threads,
+                                             dry_run)
         else:
             # Retrieve all modules to execute
-            execute_modules(msf, modules_path, module_type, rhosts,
-                            replacements, threads, dry_run)
+            jobs, processes = execute_modules(msf, modules_path,
+                                              module_type, rhosts,
+                                              replacements, threads,
+                                              dry_run)
+
+        # Don't do anything if this is a dry run
+        if dry_run:
+            return
+        # Set the global options for number of threads
+        msf.core.setg(key='THREADS', value=threads)
+        # Run any jobs which were created
+        for module_type, module_name, datastore in jobs:
+            log.info('Executing module: {n}'.format(n=module_name))
+            # Start a new Job for each prepared module
+            msf.module.execute(module_type=module_type,
+                               module_name=module_name, datastore=datastore)
+        # Run any processes which were created
+        exit_codes = [p.communicate() for p in processes]
+        log.debug(exit_codes)
+        # TODO: Upload result of process to Metasploit
     except ValueError as e:
         log.exception(e) if options.debug else log.error(e)
         return 1
