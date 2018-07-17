@@ -1,0 +1,3 @@
+[app]
+command="nikto"
+parameters="-host {{ rhosts }} -port {{ port }}"

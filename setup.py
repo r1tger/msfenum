@@ -15,8 +15,8 @@ setup(
         'requests',
         'toml'
     ],
-    # entry_points={'console_scripts': [
-    #     'msfenum = msfenum.__main__:main',
-    # ]},
+    entry_points={'console_scripts': [
+        'msfenum = msfenum.__main__:main',
+    ]},
     zip_safe=False
 )
