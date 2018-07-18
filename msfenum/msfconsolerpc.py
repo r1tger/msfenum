@@ -15,10 +15,11 @@ class MSFConsoleRPC:
     :param password: Password
     """
     def __init__(self, host='localhost', port=55552, username='msf',
-                 password=''):
+                 password='', dry_run=False):
         self.url = 'http://{h}:{p}/api/'.format(h=host, p=port)
         self.username = username
         self.password = password
+        self.dry_run = dry_run
         self.token = False
 
     def __call__(self, **kwargs):
@@ -47,7 +48,7 @@ class MSFConsoleRPC:
             data.insert(0, self.token)
         data.insert(0, method)
         log.debug(data)
-        # Send data to transmission
+        # Send data to msfconsole
         headers = {'Content-type': 'binary/message-pack'}
         response = post(self.url, data=packb(data), headers=headers)
         response.raise_for_status()

@@ -54,62 +54,71 @@ def get_modules(modules_path, module_type):
             yield((module_name, join(dirpath, filename)))
 
 
-def prepare_module(rpc, module_type, module_name, filename, replacements,
-                   rhosts, threads=2, dry_run=False):
-    """ TODO: Handle different module_types better """
+def load_datastore(filename, replacements={}):
+    """ """
     with open(filename, 'r') as f:
         # Open the file and replace any values
         template = Template(f.read())
-        d = loads(template.render(**replacements))
+        return loads(template.render(**replacements))
 
-    # Loaded modules and processes
-    jobs = []
+
+def prepare_app(filename, replacements, rhosts):
+    """ """
+    # Load datastore
+    d = load_datastore(filename, replacements)
     processes = []
 
-    if 'app' in d:
-        # Process this module as an application
-        command = d['app']['command']
-        arguments = d['app']['parameters'] if 'parameters' in d['app'] else ''
-        # Create a new process
-        cmd = split('{c} {a}'.format(c=command, a=arguments))
-        log.debug('Creating app: {c}'.format(c=' '.join(cmd)))
-        processes.append(Popen(cmd, stdout=PIPE, stderr=PIPE))
+    # Process this module as an application
+    command = d['app']['command']
+    arguments = d['app']['parameters'] if 'parameters' in d['app'] else ''
+    # Create a new process
+    cmd = split('{c} {a}'.format(c=command, a=arguments))
+    log.debug('Creating app: {c}'.format(c=' '.join(cmd)))
+    processes.append(Popen(cmd, stdout=PIPE, stderr=PIPE))
+    # Success
+    return processes
 
-    if 'datastore' in d:
-        # Load the datastore options
-        datastore = d['datastore'] if 'datastore' in d else {}
 
-        if 'target' in d:
-            # Check if a target is specified for this module
-            services = rpc.db.services(xopts={})[b'services']
-            log.debug('Services: {s}'.format(s=services))
-            target = d['target']
-            # Filter all services against the target in the module
-            filtered = []
-            for service in services:
-                for k, v in service.items():
-                    k = k.decode()
-                    if k in target.keys() and v.decode() == target[k]:
-                        # Service matches, include in filtered services
-                        filtered.append(service)
-            # Create a Job for each matched service
-            for s in filtered:
-                # Set additional variables: RHOST, RPORT, for each Job
-                datastore['RHOST'] = s[b'host'].decode()
-                datastore['RPORT'] = s[b'port']
-                log.debug('Creating Job for: {n} ({h}:{p})'.format(
-                          n=module_name, h=datastore['RHOST'],
-                          p=datastore['RPORT']))
-                jobs.append((module_name, datastore))
-        else:
-            # Add a single module for the datastore when no target is specified
-            if 'RHOSTS' not in datastore:
-                datastore['RHOSTS'] = rhosts
-            log.debug('Creating job: {n}'.format(n=module_name))
-            jobs.append((module_name, datastore))
+def prepare_auxiliary(rpc, module_type, module_name, filename, replacements,
+                      rhosts):
+    """ """
+    # Load datastore
+    d = load_datastore(filename, replacements)
+
+    # Load the datastore options (if any)
+    datastore = d['datastore'] if 'datastore' in d else {}
+    jobs = []
+
+    if 'target' in d:
+        # Check if a target is specified for this module
+        services = rpc.db.services(xopts={})[b'services']
+        log.debug('Services: {s}'.format(s=services))
+        target = d['target']
+        # Filter all services against the target in the module
+        filtered = []
+        for service in services:
+            for k, v in service.items():
+                k = k.decode()
+                if k in target.keys() and v.decode() == target[k]:
+                    # Service matches, include in filtered services
+                    filtered.append(service)
+        # Create a Job for each matched service
+        for s in filtered:
+            # Set additional variables: RHOST, RPORT, for each Job
+            datastore['RHOST'] = s[b'host'].decode()
+            datastore['RPORT'] = s[b'port']
+            log.debug('Creating Job for: {n} ({h}:{p})'.format(n=module_name,
+                      h=datastore['RHOST'], p=datastore['RPORT']))
+            jobs.append((module_type, module_name, datastore))
+    else:
+        # Add a single module for the datastore when no target is specified
+        if 'RHOSTS' not in datastore:
+            datastore['RHOSTS'] = rhosts
+        log.debug('Creating job: {n}'.format(n=module_name))
+        jobs.append((module_type, module_name, datastore))
 
     # Success
-    return jobs, processes
+    return jobs
 
 
 def logger(options):
@@ -189,17 +198,6 @@ def main():
         modules_path = abspath(options.modules)
         module_type = options.type
         rhosts = options.rhosts
-        threads = options.threads
-        dry_run = options.dry_run
-
-        # Dictionary with datastore replacements
-        replacements = {}
-        if 'auxiliary' == module_type:
-            replacements = {'users': abspath(options.users),
-                            'passwords': abspath(options.passwords)}
-        if 'app' == module_type:
-            replacements = {'port': options.port,
-                            'rhosts': rhosts}
 
         # Get modules to execute based on options
         modules = list(get_modules(modules_path, module_type))
@@ -210,32 +208,49 @@ def main():
             if 0 == len(modules):
                 raise ValueError('No module {m} found'.format(m=module_name))
 
-        # Prepare execution of each module
-        for module_name, filename in modules:
-            jobs, processes = prepare_module(msf, module_type, module_name,
-                                             filename, replacements, rhosts,
-                                             threads)
+        # Set global number of threads
+        msf.core.setg(var='THREADS', val=options.threads)
 
-        # Don't do anything if this is a dry run
-        if dry_run:
-            return
-        # Execute jobs
-        for module_type, module_name, datastore in jobs:
-            log.info('Executing module: {n}'.format(n=module_name))
-            # Start a new Job for each prepared module
-            msf.module.execute(module_type=module_type,
-                               module_name=module_name, datastore=datastore)
-        # Execute processes (waits till all processes are completed)
-        log.info('Running applications')
-        exit_codes = [p.communicate() for p in processes]
-        for i, process in enumerate(processes):
-            # Add result as a note (will automatically create service)
-            log.info('Creating note: {n}'.format(n=module_name))
-            data = exit_codes[i][0]  # stdout
-            msf.db.report_note(xopts={'host': rhosts, 'port': options.port,
-                                      'proto': options.proto,
-                                      'type': module_name, 'data': data})
+        if 'auxiliary' == module_type:
+            # Dictionary with configuration replacements
+            replacements = {'users': abspath(options.users),
+                            'passwords': abspath(options.passwords)}
+            jobs = []
+            # Prepare execution of each auxiliary module
+            for module_name, filename in modules:
+                jobs.extend(prepare_auxiliary(msf, module_type, module_name,
+                                              filename, replacements, rhosts))
+            # Don't do anything if this is a dry run
+            if options.dry_run:
+                return
+            for module_type, module_name, datastore in jobs:
+                log.info('Executing module: {n}'.format(n=module_name))
+                # Start a new Job for each prepared module
+                msf.module.execute(module_type=module_type,
+                                   module_name=module_name,
+                                   datastore=datastore)
 
+        if 'app' == module_type:
+            # Dictionary with configuration replacements
+            replacements = {'port': options.port,
+                            'rhosts': rhosts}
+            processes = []
+            # Prepare execution of each application
+            for module_name, filename in modules:
+                processes.extend(prepare_app(filename, replacements, rhosts))
+            # Don't do anything if this is a dry run
+            if options.dry_run:
+                return
+            # Execute processes (waits till all processes are completed)
+            log.info('Running applications')
+            exit_codes = [p.communicate() for p in processes]
+            for i, process in enumerate(processes):
+                # Add result as a note (will automatically create service)
+                log.info('Creating note: {n}'.format(n=module_name))
+                data = exit_codes[i][0]  # stdout
+                msf.db.report_note(xopts={'host': rhosts, 'port': options.port,
+                                          'proto': options.proto,
+                                          'type': module_name, 'data': data})
     except ValueError as e:
         log.exception(e) if options.debug else log.error(e)
         return 1
