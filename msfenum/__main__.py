@@ -31,6 +31,8 @@ from shlex import split
 from subprocess import Popen, PIPE
 from sys import exit
 from toml import loads
+from socket import gethostbyname, gaierror
+from re import match
 
 import logging
 log = logging.getLogger(__name__)
@@ -71,10 +73,11 @@ def prepare_app(filename, replacements, rhosts):
     # Process this module as an application
     command = d['app']['command']
     arguments = d['app']['parameters'] if 'parameters' in d['app'] else ''
+    expr = d['app']['match'] if 'match' in d['app'] else None
     # Create a new process
     cmd = split('{c} {a}'.format(c=command, a=arguments))
     log.debug('Creating app: {c}'.format(c=' '.join(cmd)))
-    processes.append(Popen(cmd, stdout=PIPE, stderr=PIPE))
+    processes.append((Popen(cmd, stdout=PIPE, stderr=PIPE), expr))
     # Success
     return processes
 
@@ -121,6 +124,42 @@ def prepare_auxiliary(rpc, module_type, module_name, filename, replacements,
     return jobs
 
 
+def report_note(rpc, module_name, rhost, data, expr=None):
+    """TODO: Docstring for report_note.
+
+    :module_name: TODO
+    :rhost: TODO
+    :data: TODO
+    :expr: TODO
+    :returns: TODO
+    """
+    log.info('Creating note: {n}'.format(n=module_name))
+    try:
+        # Try to resolve the rhosts to an ip address
+        ip_address = gethostbyname(rhost)
+        log.info('Resolved {r} to {i}'.format(r=rhost, i=ip_address))
+    except gaierror:
+        # If it didn't work, keep going with rhosts
+        ip_address = rhost
+
+    # Process each line seperately if an expression to match is provided
+    if expr:
+        d = []
+        for line in data.splitlines():
+            log.debug('Matching "{li}" against "{e}"'.format(e=expr, li=line))
+            m = match(expr, line)
+            if m:
+                d.append(m[1])
+        # Flatten the filtered lines, separated by a newline
+        data = '\n'.join(d)
+
+    # Process each note
+    app_type = '{m}'.format(m=module_name.replace('/', '.'))
+    rpc.db.report_note(xopts={'type': app_type,
+                              'host': ip_address,
+                              'data': data})
+
+
 def logger(options):
     """ """
     # Set up logging
@@ -149,11 +188,11 @@ def parse():
     parser.add_argument('--dry-run', help='do a dry run, don\'t create Jobs',
                         action="store_true", default=False)
     parser.add_argument('--log', help='log file')
+    parser.add_argument('--username', default='msf', help='RPC username')
     parser.add_argument('--password', default='', help='RPC password')
+    parser.add_argument('--host', default='localhost', help='RPC hostname')
     parser.add_argument('--modules', default='', required=True,
                         help='path to modules')
-    parser.add_argument('--rhosts', required=True,
-                        help='IP address or CIDR range to scan')
     parser.add_argument('--project', default='msfenum', help='project name')
     parser.add_argument('--threads', default=2, help='number of threads')
     parser.add_argument('--module', help='Single module to execute')
@@ -163,15 +202,21 @@ def parse():
     subparsers.required = True
     auxiliary = subparsers.add_parser('auxiliary',
                                       help='execute auxiliary modules')
+    auxiliary.add_argument('--rhosts', required=True,
+                           help='Host to run applications for')
     auxiliary.add_argument('--users', required=True, help='List of users')
     auxiliary.add_argument('--passwords', required=True,
                            help='List of passwords')
     subparsers.add_parser('exploit', help='execute an exploit')
     app = subparsers.add_parser('app', help='run an application')
+    app.add_argument('--rhost', required=True,
+                     help='Host to run applications for')
     app.add_argument('--port', required=True,
                      help='Port to pass to application')
     app.add_argument('--proto', default='tcp', choices=['tcp', 'udp'],
                      help='network protocol for application')
+    app.add_argument('--output', default=None,
+                     help='output filename (if required)')
     # Parse options
     return parser.parse_args()
 
@@ -186,7 +231,8 @@ def main():
         logger(options)
 
         # Create Metasploit RPC connection
-        msf = MSFConsoleRPC(password=options.password)
+        msf = MSFConsoleRPC(host=options.host, username=options.username,
+                            password=options.password)
         # Authenticate to Metasploit
         msf.authenticate()
         # Set up a workspace based on the project name
@@ -197,7 +243,6 @@ def main():
         # Process command line parameters
         modules_path = abspath(options.modules)
         module_type = options.type
-        rhosts = options.rhosts
 
         # Get modules to execute based on options
         modules = list(get_modules(modules_path, module_type))
@@ -212,6 +257,7 @@ def main():
         msf.core.setg(var='THREADS', val=options.threads)
 
         if 'auxiliary' == module_type:
+            rhosts = options.rhosts
             # Dictionary with configuration replacements
             replacements = {'users': abspath(options.users),
                             'passwords': abspath(options.passwords)}
@@ -222,38 +268,40 @@ def main():
                                               filename, replacements, rhosts))
             # Don't do anything if this is a dry run
             if options.dry_run:
-                return
+                return(0)
             for module_type, module_name, datastore in jobs:
                 log.info('Executing module: {n}'.format(n=module_name))
                 # Start a new Job for each prepared module
+                # @TODO: Check if Job is already running
                 msf.module.execute(module_type=module_type,
                                    module_name=module_name,
                                    datastore=datastore)
 
         if 'app' == module_type:
+            rhost = options.rhost
             # Dictionary with configuration replacements
             replacements = {'port': options.port,
-                            'rhosts': rhosts}
+                            'rhost': rhost,
+                            'output': options.output}
             processes = []
             # Prepare execution of each application
             for module_name, filename in modules:
-                processes.extend(prepare_app(filename, replacements, rhosts))
+                processes.extend(prepare_app(filename, replacements, rhost))
             # Don't do anything if this is a dry run
             if options.dry_run:
-                return
+                return(0)
             # Execute processes (waits till all processes are completed)
             log.info('Running applications')
-            exit_codes = [p.communicate() for p in processes]
-            for i, process in enumerate(processes):
-                # Add result as a note (will automatically create service)
-                log.info('Creating note: {n}'.format(n=module_name))
+            exit_codes = [p.communicate() for p, e in processes]
+            for i, p in enumerate(processes):
+                # Add result as a note for a host
                 data = exit_codes[i][0]  # stdout
-                msf.db.report_note(xopts={'host': rhosts, 'port': options.port,
-                                          'proto': options.proto,
-                                          'type': module_name, 'data': data})
+                report_note(msf, module_name, rhost, data.decode(), p[1])
+        # Success
+        return(0)
     except ValueError as e:
         log.exception(e) if options.debug else log.error(e)
-        return 1
+        return(1)
 
 
 if __name__ == "__main__":

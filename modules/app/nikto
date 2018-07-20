@@ -1,3 +1,4 @@
 [app]
 command="nikto"
-parameters="-host {{ rhosts }} -port {{ port }}"
+parameters="-host {{ rhost }} -port {{ port }}"
+match="\\+ (.+)"
