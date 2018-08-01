@@ -1,4 +1,6 @@
-""" """
+# -*- coding: utf-8 -*-
+
+
 from requests import post
 from msgpack import packb, unpackb
 

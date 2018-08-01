@@ -2,24 +2,6 @@
 # -*- coding: utf-8 -*-
 
 """ https://metasploit.help.rapid7.com/docs/standard-api-methods-reference
-
-[ ] 01: Quick banner grab on known ports (auxiliary)
-[ ] 02: Start nmap, followed by banner grab on found ports (auxiliary)
-[ ] 03: Determine vulnerable servers (ftp/ssh/ftp)
-[ ] 04: User enumeration
-
-We want to be smart here:
-    [ ] Create & activate a new workspace by project name in metasploit
-    [ ] Perform a portscan on the ip range (either db_nmap or
-        scanner/portscan/syn)
-    [ ] Run auxiliary modules
-
-Future enhancement:
-    [ ] Given a http URL, perform a portscan
-    [ ] Retrieve all http(s) entry points
-    [ ] Run nikto/wpscan/cewl
-    [ ] Create permuted wordlist using john
-    [ ] Enumerate rockyou wordlist & permuted wordlist
 """
 from .msfconsolerpc import MSFConsoleRPC
 
@@ -43,7 +25,7 @@ LOG_FORMAT = '[%(asctime)s] [%(levelname)s] %(message)s'
 def get_modules(modules_path, module_type):
     """TODO: Docstring for get_module.
 
-    :returns: List with created subprocesses
+    :returns: Generator with tuple ([module name], [filename])
     """
     modules_path = join(modules_path, module_type)
     # Process all files in modules_path
@@ -149,7 +131,7 @@ def prepare_jobs(rpc, module_type, module_name, filename, replacements,
     return jobs
 
 
-def report_note(rpc, module_name, rhost, data, expr=None):
+def report_note(rpc, module_type, module_name, rhost, data, expr=None):
     """TODO: Docstring for report_note.
 
     :module_name: TODO
@@ -164,7 +146,7 @@ def report_note(rpc, module_name, rhost, data, expr=None):
         ip_address = gethostbyname(rhost)
         log.info('Resolved {r} to {i}'.format(r=rhost, i=ip_address))
     except gaierror:
-        # If it didn't work, keep going with rhosts
+        # If it didn't work, keep going with rhosts (may error in msfconsole)
         ip_address = rhost
 
     # Process each line seperately if an expression to match is provided
@@ -179,7 +161,7 @@ def report_note(rpc, module_name, rhost, data, expr=None):
         data = '\n'.join(d)
 
     # Process each note
-    app_type = '{m}'.format(m=module_name.replace('/', '.'))
+    app_type = '{t}.{n}'.format(t=module_type, n=module_name.replace('/', '.'))
     rpc.db.report_note(xopts={'type': app_type,
                               'host': ip_address,
                               'data': data})
@@ -270,10 +252,9 @@ def main():
         modules = list(get_modules(modules_path, module_type))
         if options.module:
             # Filter modules if a single module is specified
-            module_name = join(module_type, options.module)
-            modules = [m for m in modules if m[0] == module_name]
+            modules = [m for m in modules if m[0] == options.module]
             if 0 == len(modules):
-                raise ValueError('No module {m} found'.format(m=module_name))
+                raise ValueError('Unknown module {m}'.format(m=options.module))
 
         # Get the configuration replacements
         replacements = get_replacements(module_type, options)
@@ -327,7 +308,9 @@ def main():
             for i, p in enumerate(processes):
                 # Add result as a note for a host
                 data = exit_codes[i][0]  # stdout
-                report_note(msf, module_name, rhost, data.decode(), p[1])
+                report_note(msf, module_type, module_name, rhost,
+                            data.decode(), p[1])
+
         # Success
         return(0)
     except ValueError as e:

@@ -1,4 +1,4 @@
 [app]
 command="nikto"
-parameters="-host {{ rhost }} -port {{ port }}"
+parameters="-host {{ rhost }} -port {{ port }} -maxtime 120s"
 match="\\+ (.+)"
