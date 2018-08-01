@@ -51,9 +51,34 @@ def get_modules(modules_path, module_type):
         # Ignore any hidden files
         for filename in [f for f in filenames if not f.startswith('.')]:
             # Calculate module name
-            module_name = join(module_type, relpath(join(dirpath, filename),
-                                                    start=join(modules_path)))
+            module_name = relpath(join(dirpath, filename),
+                                  start=join(modules_path))
             yield((module_name, join(dirpath, filename)))
+
+
+def get_replacements(module_type, options):
+    """TODO: Docstring for get_replacements.
+
+    :module_type: TODO
+    :options: TODO
+    :returns: TODO
+    """
+    # Dictionary with configuration replacements
+    replacements = {}
+    if module_type == 'auxiliary':
+        users = abspath(options.users) if options.users is not None else ''
+        passwords = (abspath(options.passwords)
+                     if options.passwords is not None > 0 else '')
+        replacements = {'users': users,
+                        'passwords': passwords,
+                        'rhosts': options.rhosts}
+    if module_type == 'exploit':
+        replacements = {'rhosts': options.rhosts}
+    if module_type == 'app':
+        replacements = {'port': options.port,
+                        'rhost': options.rhost,
+                        'output': options.output}
+    return replacements
 
 
 def load_datastore(filename, replacements={}):
@@ -82,8 +107,8 @@ def prepare_app(filename, replacements, rhosts):
     return processes
 
 
-def prepare_auxiliary(rpc, module_type, module_name, filename, replacements,
-                      rhosts):
+def prepare_jobs(rpc, module_type, module_name, filename, replacements,
+                 rhosts):
     """ """
     # Load datastore
     d = load_datastore(filename, replacements)
@@ -204,10 +229,11 @@ def parse():
                                       help='execute auxiliary modules')
     auxiliary.add_argument('--rhosts', required=True,
                            help='Host to run applications for')
-    auxiliary.add_argument('--users', required=True, help='List of users')
-    auxiliary.add_argument('--passwords', required=True,
-                           help='List of passwords')
-    subparsers.add_parser('exploit', help='execute an exploit')
+    auxiliary.add_argument('--users', help='List of users')
+    auxiliary.add_argument('--passwords', help='List of passwords')
+    exploit = subparsers.add_parser('exploit', help='execute an exploit')
+    exploit.add_argument('--rhosts', required=True,
+                         help='Host to run applications for')
     app = subparsers.add_parser('app', help='run an application')
     app.add_argument('--rhost', required=True,
                      help='Host to run applications for')
@@ -235,10 +261,6 @@ def main():
                             password=options.password)
         # Authenticate to Metasploit
         msf.authenticate()
-        # Set up a workspace based on the project name
-        msf.db.add_workspace(wspace=options.project)
-        msf.db.set_workspace(wspace=options.project)
-        log.info('Created new workspace: "{w}"'.format(w=options.project))
 
         # Process command line parameters
         modules_path = abspath(options.modules)
@@ -253,36 +275,45 @@ def main():
             if 0 == len(modules):
                 raise ValueError('No module {m} found'.format(m=module_name))
 
+        # Get the configuration replacements
+        replacements = get_replacements(module_type, options)
+
+        # Set up a workspace based on the project name
+        msf.db.add_workspace(wspace=options.project)
+        msf.db.set_workspace(wspace=options.project)
+        log.info('Created new workspace: "{w}"'.format(w=options.project))
+
         # Set global number of threads
         msf.core.setg(var='THREADS', val=options.threads)
 
-        if 'auxiliary' == module_type:
+        if module_type == 'auxiliary' or module_type == 'exploit':
             rhosts = options.rhosts
-            # Dictionary with configuration replacements
-            replacements = {'users': abspath(options.users),
-                            'passwords': abspath(options.passwords)}
             jobs = []
             # Prepare execution of each auxiliary module
             for module_name, filename in modules:
-                jobs.extend(prepare_auxiliary(msf, module_type, module_name,
-                                              filename, replacements, rhosts))
+                jobs.extend(prepare_jobs(msf, module_type, module_name,
+                            filename, replacements, rhosts))
             # Don't do anything if this is a dry run
             if options.dry_run:
                 return(0)
+            # Get active jobs
+            active_jobs = msf.job.list().values()
             for module_type, module_name, datastore in jobs:
+                # Check if an active job is currently running for this module
+                if any([s for s in active_jobs if module_name.encode() in s]):
+                    log.info('Skipping module: {n}'.format(n=module_name))
+                    continue
                 log.info('Executing module: {n}'.format(n=module_name))
                 # Start a new Job for each prepared module
-                # @TODO: Check if Job is already running
                 msf.module.execute(module_type=module_type,
                                    module_name=module_name,
                                    datastore=datastore)
 
-        if 'app' == module_type:
+        if module_type == 'app':
+            # Application are run by msfenum, the result imported into
+            # Metasploit
             rhost = options.rhost
             # Dictionary with configuration replacements
-            replacements = {'port': options.port,
-                            'rhost': rhost,
-                            'output': options.output}
             processes = []
             # Prepare execution of each application
             for module_name, filename in modules:
@@ -304,5 +335,5 @@ def main():
         return(1)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     exit(main())
