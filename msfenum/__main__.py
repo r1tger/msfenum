@@ -13,8 +13,6 @@ from shlex import split
 from subprocess import Popen, PIPE
 from sys import exit
 from toml import loads
-from socket import gethostbyname, gaierror
-from re import match
 
 import logging
 log = logging.getLogger(__name__)
@@ -38,32 +36,7 @@ def get_modules(modules_path, module_type):
             yield((module_name, join(dirpath, filename)))
 
 
-def get_replacements(module_type, options):
-    """TODO: Docstring for get_replacements.
-
-    :module_type: TODO
-    :options: TODO
-    :returns: TODO
-    """
-    # Dictionary with configuration replacements
-    replacements = {}
-    if module_type == 'auxiliary':
-        users = abspath(options.users) if options.users is not None else ''
-        passwords = (abspath(options.passwords)
-                     if options.passwords is not None > 0 else '')
-        replacements = {'users': users,
-                        'passwords': passwords,
-                        'rhosts': options.rhosts}
-    if module_type == 'exploit':
-        replacements = {'rhosts': options.rhosts}
-    if module_type == 'app':
-        replacements = {'port': options.port,
-                        'rhost': options.rhost,
-                        'output': options.output}
-    return replacements
-
-
-def load_datastore(filename, replacements={}):
+def load_datastore(filename, replacements):
     """ """
     with open(filename, 'r') as f:
         # Open the file and replace any values
@@ -131,42 +104,6 @@ def prepare_jobs(rpc, module_type, module_name, filename, replacements,
     return jobs
 
 
-def report_note(rpc, module_type, module_name, rhost, data, expr=None):
-    """TODO: Docstring for report_note.
-
-    :module_name: TODO
-    :rhost: TODO
-    :data: TODO
-    :expr: TODO
-    :returns: TODO
-    """
-    log.info('Creating note: {n}'.format(n=module_name))
-    try:
-        # Try to resolve the rhosts to an ip address
-        ip_address = gethostbyname(rhost)
-        log.info('Resolved {r} to {i}'.format(r=rhost, i=ip_address))
-    except gaierror:
-        # If it didn't work, keep going with rhosts (may error in msfconsole)
-        ip_address = rhost
-
-    # Process each line seperately if an expression to match is provided
-    if expr:
-        d = []
-        for line in data.splitlines():
-            log.debug('Matching "{li}" against "{e}"'.format(e=expr, li=line))
-            m = match(expr, line)
-            if m:
-                d.append(m[1])
-        # Flatten the filtered lines, separated by a newline
-        data = '\n'.join(d)
-
-    # Process each note
-    app_type = '{t}.{n}'.format(t=module_type, n=module_name.replace('/', '.'))
-    rpc.db.report_note(xopts={'type': app_type,
-                              'host': ip_address,
-                              'data': data})
-
-
 def logger(options):
     """ """
     # Set up logging
@@ -209,14 +146,20 @@ def parse():
     subparsers.required = True
     auxiliary = subparsers.add_parser('auxiliary',
                                       help='execute auxiliary modules')
+    auxiliary.set_defaults(callback=do_auxiliary)
     auxiliary.add_argument('--rhosts', required=True,
                            help='Host to run applications for')
-    auxiliary.add_argument('--users', help='List of users')
-    auxiliary.add_argument('--passwords', help='List of passwords')
+    auxiliary.add_argument('--users', required=True, help='List of users')
+    auxiliary.add_argument('--passwords', required=True,
+                           help='List of passwords')
+    auxiliary.add_argument('--word-list', required=True,
+                           help='Word list to process')
     exploit = subparsers.add_parser('exploit', help='execute an exploit')
+    exploit.set_defaults(callback=do_auxiliary)
     exploit.add_argument('--rhosts', required=True,
                          help='Host to run applications for')
     app = subparsers.add_parser('app', help='run an application')
+    app.set_defaults(callback=do_app)
     app.add_argument('--rhost', required=True,
                      help='Host to run applications for')
     app.add_argument('--port', required=True,
@@ -227,6 +170,70 @@ def parse():
                      help='output filename (if required)')
     # Parse options
     return parser.parse_args()
+
+
+def do_app(options, msf, module_type, modules):
+    """ """
+    # Application are run by msfenum, the result imported into
+    # Metasploit
+    rhost = options.rhost
+    # Set up template parameters
+    replacements = {'port': options.port,
+                    'rhost': options.rhost,
+                    'output': options.output}
+    # Dictionary with configuration replacements
+    processes = []
+    # Prepare execution of each application
+    for module_name, filename in modules:
+        processes.extend(prepare_app(filename, replacements, rhost))
+    # Don't do anything if this is a dry run
+    if options.dry_run:
+        return(0)
+    # Execute processes (waits till all processes are completed)
+    log.info('Running applications')
+    exit_codes = [p.communicate() for p, e in processes]
+    # Running the application can take a long time, re-authenticate
+    msf.authenticate()
+    # Process each exit code
+    for i, p in enumerate(processes):
+        # Add result as a note for a host
+        data = exit_codes[i][0]  # stdout
+        msf.report_note(module_type, module_name, rhost,
+                        data.decode(), p[1])
+
+
+def do_auxiliary(options, msf, module_type, modules):
+    """ """
+    rhosts = options.rhosts
+    jobs = []
+    # Set up template parameters
+    users = abspath(options.users) if options.users is not None else ''
+    passwords = (abspath(options.passwords)
+                 if options.passwords is not None else '')
+    word_list = (abspath(options.word_list)
+                 if options.word_list is not None else '')
+    replacements = {'users': users,
+                    'passwords': passwords,
+                    'rhosts': options.rhosts,
+                    'word_list': word_list}
+    # Prepare execution of each auxiliary module
+    for module_name, filename in modules:
+        jobs.extend(prepare_jobs(msf, module_type, module_name, filename,
+                                 replacements, rhosts))
+    # Don't do anything if this is a dry run
+    if options.dry_run:
+        return(0)
+    # Get active jobs
+    active_jobs = msf.job.list().values()
+    for module_type, module_name, datastore in jobs:
+        # Check if an active job is currently running for this module
+        if any([s for s in active_jobs if module_name.encode() in s]):
+            log.info('Skipping module: {n}'.format(n=module_name))
+            continue
+        log.info('Executing module: {n}'.format(n=module_name))
+        # Start a new Job for each prepared module
+        msf.module.execute(module_type=module_type, module_name=module_name,
+                           datastore=datastore)
 
 
 def main():
@@ -256,9 +263,6 @@ def main():
             if 0 == len(modules):
                 raise ValueError('Unknown module {m}'.format(m=options.module))
 
-        # Get the configuration replacements
-        replacements = get_replacements(module_type, options)
-
         # Set up a workspace based on the project name
         msf.db.add_workspace(wspace=options.project)
         msf.db.set_workspace(wspace=options.project)
@@ -267,49 +271,8 @@ def main():
         # Set global number of threads
         msf.core.setg(var='THREADS', val=options.threads)
 
-        if module_type == 'auxiliary' or module_type == 'exploit':
-            rhosts = options.rhosts
-            jobs = []
-            # Prepare execution of each auxiliary module
-            for module_name, filename in modules:
-                jobs.extend(prepare_jobs(msf, module_type, module_name,
-                            filename, replacements, rhosts))
-            # Don't do anything if this is a dry run
-            if options.dry_run:
-                return(0)
-            # Get active jobs
-            active_jobs = msf.job.list().values()
-            for module_type, module_name, datastore in jobs:
-                # Check if an active job is currently running for this module
-                if any([s for s in active_jobs if module_name.encode() in s]):
-                    log.info('Skipping module: {n}'.format(n=module_name))
-                    continue
-                log.info('Executing module: {n}'.format(n=module_name))
-                # Start a new Job for each prepared module
-                msf.module.execute(module_type=module_type,
-                                   module_name=module_name,
-                                   datastore=datastore)
-
-        if module_type == 'app':
-            # Application are run by msfenum, the result imported into
-            # Metasploit
-            rhost = options.rhost
-            # Dictionary with configuration replacements
-            processes = []
-            # Prepare execution of each application
-            for module_name, filename in modules:
-                processes.extend(prepare_app(filename, replacements, rhost))
-            # Don't do anything if this is a dry run
-            if options.dry_run:
-                return(0)
-            # Execute processes (waits till all processes are completed)
-            log.info('Running applications')
-            exit_codes = [p.communicate() for p, e in processes]
-            for i, p in enumerate(processes):
-                # Add result as a note for a host
-                data = exit_codes[i][0]  # stdout
-                report_note(msf, module_type, module_name, rhost,
-                            data.decode(), p[1])
+        # Execute the callback based on the requested subparser
+        options.callback(options, msf, module_type, modules)
 
         # Success
         return(0)

@@ -3,6 +3,8 @@
 
 from requests import post
 from msgpack import packb, unpackb
+from socket import gethostbyname, gaierror
+from re import match
 
 import logging
 log = logging.getLogger(__name__)
@@ -37,10 +39,47 @@ class MSFConsoleRPC:
 
     def authenticate(self):
         """ """
+        self.token = False
         response = self.request('auth.login', {'username': self.username,
                                                'password': self.password})
         # Set the authentication token for use in requests
         self.token = response.get(b'token')
+
+    def report_note(self, module_type, module_name, rhost, data, expr=None):
+        """TODO: Docstring for report_note.
+
+        :module_name: TODO
+        :rhost: TODO
+        :data: TODO
+        :expr: TODO
+        :returns: TODO
+        """
+        log.info('Creating note: {n}'.format(n=module_name))
+        try:
+            # Try to resolve the rhosts to an ip address
+            ip_address = gethostbyname(rhost)
+            log.info('Resolved {r} to {i}'.format(r=rhost, i=ip_address))
+        except gaierror:
+            # If it didn't work, keep going with rhost
+            ip_address = rhost
+        # Process each line seperately if an expression to match is provided
+        if expr:
+            d = []
+            for line in data.splitlines():
+                log.debug('Matching "{li}" against "{e}"'.format(e=expr,
+                                                                 li=line))
+                m = match(expr, line)
+                if m:
+                    d.append(m[1])
+            # Flatten the filtered lines, separated by a newline
+            data = '\n'.join(d)
+
+        # Process each note
+        app_type = '{t}.{n}'.format(t=module_type,
+                                    n=module_name.replace('/', '.'))
+        self.request('db.report_note', {'xopts': {'type': app_type,
+                                                  'host': ip_address,
+                                                  'data': data}})
 
     def request(self, method, kwargs):
         # Create msgpack request
