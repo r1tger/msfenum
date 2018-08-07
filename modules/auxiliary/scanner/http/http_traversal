@@ -1,4 +1,0 @@
-[datastore]
-DICTIONARY="{{ word_list }}"
-VERBOSE=true
-PROXIES="HTTP:localhost:8080"

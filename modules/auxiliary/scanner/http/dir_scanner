@@ -1,3 +1,2 @@
 [datastore]
 DICTIONARY="{{ word_list }}"
-PROXIES="HTTP:localhost:8080"

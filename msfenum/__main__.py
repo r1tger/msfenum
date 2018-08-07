@@ -2,6 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """ https://metasploit.help.rapid7.com/docs/standard-api-methods-reference
+
+    @TODO:
+        Add SQLMap/XSSer/WFuzz applications
+        Add user friendly reporting on notes
 """
 from .msfconsolerpc import MSFConsoleRPC
 
@@ -12,6 +16,7 @@ from os.path import join, relpath, abspath
 from shlex import split
 from subprocess import Popen, PIPE
 from sys import exit
+from time import time, sleep
 from toml import loads
 
 import logging
@@ -49,14 +54,13 @@ def prepare_app(filename, replacements, rhosts):
     # Load datastore
     d = load_datastore(filename, replacements)
     processes = []
-
     # Process this module as an application
     command = d['app']['command']
     arguments = d['app']['parameters'] if 'parameters' in d['app'] else ''
     expr = d['app']['match'] if 'match' in d['app'] else None
     # Create a new process
     cmd = split('{c} {a}'.format(c=command, a=arguments))
-    log.debug('Creating app: {c}'.format(c=' '.join(cmd)))
+    log.info('Creating app: {c}'.format(c=' '.join(cmd)))
     processes.append((Popen(cmd, stdout=PIPE, stderr=PIPE), expr))
     # Success
     return processes
@@ -139,11 +143,14 @@ def parse():
                         help='path to modules')
     parser.add_argument('--project', default='msfenum', help='project name')
     parser.add_argument('--threads', default=2, help='number of threads')
-    parser.add_argument('--module', help='Single module to execute')
+    parser.add_argument('--module', help='single module to execute')
+    parser.add_argument('--report', help='report on progress',
+                        action='store_true', default=False)
     # Sub parsers for run modes
     subparsers = parser.add_subparsers(help='auxiliary|exploit|post',
                                        dest='type')
     subparsers.required = True
+    # Auxiliary
     auxiliary = subparsers.add_parser('auxiliary',
                                       help='execute auxiliary modules')
     auxiliary.set_defaults(callback=do_auxiliary)
@@ -154,11 +161,13 @@ def parse():
                            help='List of passwords')
     auxiliary.add_argument('--word-list', required=True,
                            help='Word list to process')
-    exploit = subparsers.add_parser('exploit', help='execute an exploit')
-    exploit.set_defaults(callback=do_auxiliary)
-    exploit.add_argument('--rhosts', required=True,
-                         help='Host to run applications for')
-    app = subparsers.add_parser('app', help='run an application')
+    # Exploit
+    # exploit = subparsers.add_parser('exploit', help='execute an exploit')
+    # exploit.set_defaults(callback=do_auxiliary)
+    # exploit.add_argument('--rhosts', required=True,
+    #                      help='Host to run applications for')
+    # App
+    app = subparsers.add_parser('app', help='run all applications')
     app.set_defaults(callback=do_app)
     app.add_argument('--rhost', required=True,
                      help='Host to run applications for')
@@ -166,21 +175,17 @@ def parse():
                      help='Port to pass to application')
     app.add_argument('--proto', default='tcp', choices=['tcp', 'udp'],
                      help='network protocol for application')
-    app.add_argument('--output', default=None,
-                     help='output filename (if required)')
     # Parse options
     return parser.parse_args()
 
 
 def do_app(options, msf, module_type, modules):
     """ """
-    # Application are run by msfenum, the result imported into
-    # Metasploit
+    # Application is run by msfenum, the result imported into Metasploit
     rhost = options.rhost
     # Set up template parameters
     replacements = {'port': options.port,
-                    'rhost': options.rhost,
-                    'output': options.output}
+                    'rhost': options.rhost}
     # Dictionary with configuration replacements
     processes = []
     # Prepare execution of each application
@@ -193,13 +198,12 @@ def do_app(options, msf, module_type, modules):
     log.info('Running applications')
     exit_codes = [p.communicate() for p, e in processes]
     # Running the application can take a long time, re-authenticate
-    msf.authenticate()
+    msf.login()
     # Process each exit code
     for i, p in enumerate(processes):
         # Add result as a note for a host
         data = exit_codes[i][0]  # stdout
-        msf.report_note(module_type, module_name, rhost,
-                        data.decode(), p[1])
+        msf.report_note(module_type, module_name, rhost, data.decode(), p[1])
 
 
 def do_auxiliary(options, msf, module_type, modules):
@@ -236,6 +240,38 @@ def do_auxiliary(options, msf, module_type, modules):
                            datastore=datastore)
 
 
+def report(msf, interval=10, timeout=300):
+    """ """
+    notes = {}
+    last_change = time()
+    while True:
+        # Get hosts (ip addresses)
+        hosts = msf.db.hosts(xopts={})[b'hosts']
+        hosts = [d[b'address'].decode() for d in hosts]
+        log.debug('Hosts found: {h}'.format(h=hosts))
+        # Get all notes
+        for host in hosts:
+            note = msf.db.get_note(xopts={'host': host})[b'note']
+            log.debug('Note found for host {h}: {n}'.format(h=host, n=note))
+            # Find new notes with regards to previous run
+            if host not in notes:
+                notes[host] = []
+            for n in note:
+                if n not in notes[host]:
+                    log.debug('{n}'.format(n=note))
+                    log.info('host={h} type={t} data={n}'.format(
+                             h=host, t=n[b'ntype'].decode(),
+                             n=n[b'data'].decode()))
+                    notes[host].append(n)
+                    last_change = time()
+        # Check if we timed out
+        if (time() - last_change) > timeout:
+            log.info('No update received in {t}s, stopping'.format(t=timeout))
+            break
+        # Wait 10 seconds until next iteration
+        sleep(interval - time() % interval)
+
+
 def main():
     """Main entry point
     :returns: TODO
@@ -244,12 +280,6 @@ def main():
     try:
         # Setup logging
         logger(options)
-
-        # Create Metasploit RPC connection
-        msf = MSFConsoleRPC(host=options.host, username=options.username,
-                            password=options.password)
-        # Authenticate to Metasploit
-        msf.authenticate()
 
         # Process command line parameters
         modules_path = abspath(options.modules)
@@ -260,19 +290,22 @@ def main():
         if options.module:
             # Filter modules if a single module is specified
             modules = [m for m in modules if m[0] == options.module]
-            if 0 == len(modules):
+            if len(modules) == 0:
                 raise ValueError('Unknown module {m}'.format(m=options.module))
 
-        # Set up a workspace based on the project name
-        msf.db.add_workspace(wspace=options.project)
-        msf.db.set_workspace(wspace=options.project)
-        log.info('Created new workspace: "{w}"'.format(w=options.project))
-
-        # Set global number of threads
-        msf.core.setg(var='THREADS', val=options.threads)
-
-        # Execute the callback based on the requested subparser
-        options.callback(options, msf, module_type, modules)
+        # Open a new connection to Metasploit and login
+        with MSFConsoleRPC(host=options.host, username=options.username,
+                           password=options.password) as msf:
+            # Set up a workspace based on the project name
+            msf.db.add_workspace(wspace=options.project)
+            msf.db.set_workspace(wspace=options.project)
+            log.info('Created new workspace: "{w}"'.format(w=options.project))
+            # Set global number of threads
+            msf.core.setg(var='THREADS', val=options.threads)
+            # Execute the callback based on the requested subparser
+            options.callback(options, msf, module_type, modules)
+            if options.report:
+                report(msf)
 
         # Success
         return(0)
