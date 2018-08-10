@@ -10,6 +10,16 @@ $ msfenum --help
 ```
 
 # Using
+msfenum needs ```msfconsole``` to be running and the ```msfrpc``` plugin to be
+loaded:
+```bash
+$ msfconsole
+_msf_ > load msgrpc
+```
+Loading the msfrpc plugin prints a password, which must be used when connecting
+msfenum to msfconsole. The password must be provided as part of the command
+line.
+
 Once installed, call ```msfenum``` with the ```--help``` parameter.
 
 # Developing
@@ -22,7 +32,7 @@ $ virtualenv --python=python3 env
 $ source env/bin/activate
 $ pip install --editable .
 ```
-Now edit any files in the msfenum/ package and submit a pull request.
+Now edit any files in the ```msfenum/``` package and submit a pull request.
 
 # TO-DO
 * Add documentation

@@ -305,7 +305,10 @@ def main():
             # Execute the callback based on the requested subparser
             options.callback(options, msf, module_type, modules)
             if options.report:
-                report(msf)
+                try:
+                    report(msf)
+                except KeyboardInterrupt:
+                    log.info('Received <ctrl-c>, stopping')
 
         # Success
         return(0)
