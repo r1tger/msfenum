@@ -7,7 +7,7 @@
         Add SQLMap/XSSer/WFuzz applications
         Add user friendly reporting on notes
 """
-from .msfconsolerpc import MSFConsoleRPC
+from .msfrpc import MsfRPC, MsfRPCException
 
 from argparse import ArgumentParser
 from jinja2 import Template
@@ -71,39 +71,14 @@ def prepare_jobs(rpc, module_type, module_name, filename, replacements,
     """ """
     # Load datastore
     d = load_datastore(filename, replacements)
-
     # Load the datastore options (if any)
     datastore = d['datastore'] if 'datastore' in d else {}
     jobs = []
-
-    if 'target' in d:
-        # Check if a target is specified for this module
-        services = rpc.db.services(xopts={})[b'services']
-        log.debug('Services: {s}'.format(s=services))
-        target = d['target']
-        # Filter all services against the target in the module
-        filtered = []
-        for service in services:
-            for k, v in service.items():
-                k = k.decode()
-                if k in target.keys() and v.decode() == target[k]:
-                    # Service matches, include in filtered services
-                    filtered.append(service)
-        # Create a Job for each matched service
-        for s in filtered:
-            # Set additional variables: RHOST, RPORT, for each Job
-            datastore['RHOST'] = s[b'host'].decode()
-            datastore['RPORT'] = s[b'port']
-            log.debug('Creating Job for: {n} ({h}:{p})'.format(n=module_name,
-                      h=datastore['RHOST'], p=datastore['RPORT']))
-            jobs.append((module_type, module_name, datastore))
-    else:
-        # Add a single module for the datastore when no target is specified
-        if 'RHOSTS' not in datastore:
-            datastore['RHOSTS'] = rhosts
-        log.debug('Creating job: {n}'.format(n=module_name))
-        jobs.append((module_type, module_name, datastore))
-
+    # Add a single module for the datastore
+    if 'RHOSTS' not in datastore:
+        datastore['RHOSTS'] = rhosts
+    log.debug('Creating job: {n}'.format(n=module_name))
+    jobs.append((module_type, module_name, datastore))
     # Success
     return jobs
 
@@ -161,11 +136,6 @@ def parse():
                            help='List of passwords')
     auxiliary.add_argument('--word-list', required=True,
                            help='Word list to process')
-    # Exploit
-    # exploit = subparsers.add_parser('exploit', help='execute an exploit')
-    # exploit.set_defaults(callback=do_auxiliary)
-    # exploit.add_argument('--rhosts', required=True,
-    #                      help='Host to run applications for')
     # App
     app = subparsers.add_parser('app', help='run all applications')
     app.set_defaults(callback=do_app)
@@ -193,7 +163,7 @@ def do_app(options, msf, module_type, modules):
         processes.extend(prepare_app(filename, replacements, rhost))
     # Don't do anything if this is a dry run
     if options.dry_run:
-        return(0)
+        return
     # Execute processes (waits till all processes are completed)
     log.info('Running applications')
     exit_codes = [p.communicate() for p, e in processes]
@@ -226,7 +196,7 @@ def do_auxiliary(options, msf, module_type, modules):
                                  replacements, rhosts))
     # Don't do anything if this is a dry run
     if options.dry_run:
-        return(0)
+        return
     # Get active jobs
     active_jobs = msf.job.list().values()
     for module_type, module_name, datastore in jobs:
@@ -294,8 +264,8 @@ def main():
                 raise ValueError('Unknown module {m}'.format(m=options.module))
 
         # Open a new connection to Metasploit and login
-        with MSFConsoleRPC(host=options.host, username=options.username,
-                           password=options.password) as msf:
+        with MsfRPC(host=options.host, username=options.username,
+                    password=options.password) as msf:
             # Set up a workspace based on the project name
             msf.db.add_workspace(wspace=options.project)
             msf.db.set_workspace(wspace=options.project)
@@ -305,15 +275,16 @@ def main():
             # Execute the callback based on the requested subparser
             options.callback(options, msf, module_type, modules)
             if options.report:
-                try:
-                    report(msf)
-                except KeyboardInterrupt:
-                    log.info('Received <ctrl-c>, stopping')
+                report(msf)
 
         # Success
         return(0)
-    except ValueError as e:
+    except (MsfRPCException, ValueError) as e:
         log.exception(e) if options.debug else log.error(e)
+    except KeyboardInterrupt:
+        log.info('Received <ctrl-c>, stopping')
+    finally:
+        # Return 1 on any caught exception
         return(1)
 
 
