@@ -13,6 +13,7 @@ setup(
     install_requires=[
         'jinja2',
         'msgpack',
+        'python-owasp-zap-v2.4',
         'requests',
         'toml'
     ],

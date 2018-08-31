@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 
-from requests import post
+from requests import post, RequestException
 from msgpack import packb, unpackb
 from socket import gethostbyname, gaierror
 from re import match
@@ -124,8 +124,12 @@ class MsfRPC:
         log.debug('Sending data: {d}'.format(d=data))
         # Send data to msfconsole
         headers = {'Content-type': 'binary/message-pack'}
-        response = post(self.url, data=packb(data), headers=headers)
-        response.raise_for_status()
+        try:
+            response = post(self.url, data=packb(data), headers=headers)
+            response.raise_for_status()
+        except RequestException as e:
+            # Wrap any requests exceptions
+            raise MsfRPCException(e)
         # Decode and return the response
         result = unpackb(response.content)
         if result.get(b'error'):
