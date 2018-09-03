@@ -1,2 +1,3 @@
 [datastore]
 url="{{ rhost }}"
+contextName="{{ project }}"

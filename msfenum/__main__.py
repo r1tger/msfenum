@@ -11,6 +11,7 @@
 
 from .msfrpc import MsfRPC
 from .zapapi import ZAPAPI
+from .dependencies import Graph
 
 from argparse import ArgumentParser
 from jinja2 import Template
@@ -138,8 +139,6 @@ def parse():
     auxiliary.add_argument('--users', required=True, help='List of users')
     auxiliary.add_argument('--passwords', required=True,
                            help='List of passwords')
-    auxiliary.add_argument('--word-list', required=True,
-                           help='Word list to process')
     # App
     app = subparsers.add_parser('app', help='run all applications')
     app.set_defaults(callback=do_app)
@@ -180,7 +179,20 @@ def zapapi(func):
     def wrapper_zapapi(options, module_type, modules):
         zap = ZAPAPI(host=options.host, username=options.username,
                      api_key=options.api_key)
-        # TODO: Set up zap environment
+        # Create a new context for the actions
+        contexts = zap.context.view.contextList()['contextList']
+        if options.project not in contexts:
+            log.info('Created new context: "{c}"'.format(c=options.project))
+            zap.context.action.newContext(contextName=options.project)
+        # Add rhost to the context
+        regex = '{h}.*'.format(h=options.rhost)
+        regexs = (zap.context.view.includeRegexs(
+                  contextName=options.project)['includeRegexs'])
+        if regex not in regexs:
+            zap.context.action.includeInContext(contextName=options.project,
+                                                regex=regex)
+        # Call rhost to add it to the Scan Tree
+        zap.core.action.accessUrl(url=options.rhost)
         # Call the wrapped function
         func(options, module_type, modules, zap)
     return wrapper_zapapi
@@ -224,12 +236,9 @@ def do_auxiliary(options, module_type, modules, msf):
     users = abspath(options.users) if options.users is not None else ''
     passwords = (abspath(options.passwords)
                  if options.passwords is not None else '')
-    word_list = (abspath(options.word_list)
-                 if options.word_list is not None else '')
     replacements = {'users': users,
                     'passwords': passwords,
-                    'rhosts': options.rhosts,
-                    'word_list': word_list}
+                    'rhosts': options.rhosts}
     # Prepare execution of each auxiliary module
     for module_name, filename in modules:
         jobs.extend(prepare_jobs(msf, module_type, module_name, filename,
@@ -254,11 +263,10 @@ def do_auxiliary(options, module_type, modules, msf):
 def do_zap(options, module_type, modules, zap):
     """" """
     # Set up template parameters
-    replacements = {'rhost': options.rhost}
+    replacements = {'rhost': options.rhost,
+                    'project': options.project}
     # Process each module
     for module_name, filename in modules:
-        # API method to call
-        module_name = module_name.replace('/', '.')
         # Load datastore
         d = load_datastore(filename, replacements)
         # Call the API method with parameters

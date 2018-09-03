@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 
+from requests import post
 
 import logging
 log = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class ZAPAPI:
     """
     def __init__(self, host='localhost', port=8080, username='zap',
                  api_key=''):
-        self.url = 'http://{h}:{p}/api/'.format(h=host, p=port)
+        self.url = 'http://{h}:{p}/JSON'.format(h=host, p=port)
         self.username = username
         self.api_key = api_key
 
@@ -37,4 +38,16 @@ class ZAPAPI:
 
     def request(self, method, kwargs):
         """ """
-        pass
+        # Convert method to API action
+        method = method.replace('.', '/')
+        # Add required parameters
+        url = '{u}/{m}'.format(u=self.url, m=method)
+        kwargs.update({'apikey': self.api_key, 'zapapiformat': 'JSON'})
+        log.info('Sending data: {d} to URL {u}'.format(d=kwargs, u=url))
+        # Send to ZAP
+        response = post(url, data=kwargs)
+        result = response.json()
+        log.info('Received data: {d}'.format(d=result))
+        # Check HTTP response code
+        response.raise_for_status()
+        return result

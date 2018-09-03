@@ -58,7 +58,7 @@ class MsfRPC:
 
     def login(self):
         """ """
-        log.info('Login')
+        log.info('MsfRPC::Login')
         self.logout()
         response = self.request('auth.login', {'username': self.username,
                                                'password': self.password})
@@ -69,7 +69,7 @@ class MsfRPC:
         """ """
         if self.token is False:
             return
-        log.info('Logout')
+        log.info('MsfRPC::Logout')
         self.request('auth.logout', {'token': self.token})
         self.token = False
 
