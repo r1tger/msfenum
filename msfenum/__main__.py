@@ -11,7 +11,6 @@
 
 from .msfrpc import MsfRPC
 from .zapapi import ZAPAPI
-from .dependencies import Graph
 
 from argparse import ArgumentParser
 from jinja2 import Template
@@ -20,10 +19,8 @@ from os.path import join, relpath, abspath
 from shlex import split
 from subprocess import Popen, PIPE
 from sys import exit
-from time import time, sleep
 from toml import loads
 from functools import wraps
-from requests import RequestException
 
 import logging
 log = logging.getLogger(__name__)
