@@ -17,10 +17,14 @@ from jinja2 import Template
 from os import walk
 from os.path import join, relpath, abspath
 from shlex import split
-from subprocess import Popen, PIPE
+from subprocess import Popen, PIPE, TimeoutExpired
 from sys import exit
 from toml import loads
 from functools import wraps
+from threading import Thread
+from queue import Queue, Empty
+from time import sleep
+
 
 import logging
 log = logging.getLogger(__name__)
@@ -64,7 +68,9 @@ def prepare_app(filename, replacements, rhosts):
     # Create a new process
     cmd = split('{c} {a}'.format(c=command, a=arguments))
     log.info('Creating app: {c}'.format(c=' '.join(cmd)))
-    processes.append((Popen(cmd, stdout=PIPE, stderr=PIPE), expr))
+    process = Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True,
+                    bufsize=1)
+    processes.append((process, expr))
     # Success
     return processes
 
@@ -195,6 +201,12 @@ def zapapi(func):
     return wrapper_zapapi
 
 
+def enqueue_output(args, out, queue):
+    for line in iter(out.readline, b''):
+        queue.put((args[0], line))
+    out.close()
+
+
 @msfrpc
 def do_app(options, module_type, modules, msf):
     """ """
@@ -213,14 +225,40 @@ def do_app(options, module_type, modules, msf):
         return
     # Execute processes (waits till all processes are completed)
     log.info('Running applications')
-    exit_codes = [p.communicate() for p, e in processes]
-    # Running the application can take a long time, re-authenticate
+
+    q = Queue()
+    for p, e in processes:
+        # Start a monitoring thread for each Process
+        t = Thread(target=enqueue_output, args=(p.args, p.stdout, q))
+        t.daemon = True
+        t.start()
+
+    while(True):
+        # Log all stdout for all running processes in a non-blocking manner
+        try:
+            cmd, line = q.get_nowait()
+        except Empty:
+            # Check if all processes are still running
+            if all([p.poll() is not None for p, e in processes]):
+                break
+            sleep(1)
+        else:
+            # Got line
+            if line is not '':
+                log.info('[{c}] {line}'.format(c=cmd, line=line.rstrip()))
+
+    # @TODO: If user quits, log any available application output
+
+    """
+    # exit_codes = run_app(processes)
+    # Running the applications can take a long time, re-authenticate
     msf.login()
     # Process each exit code
     for i, p in enumerate(processes):
         # Add result as a note for a host
         data = exit_codes[i][0]  # stdout
         msf.report_note(module_type, module_name, rhost, data.decode(), p[1])
+    """
 
 
 @msfrpc
