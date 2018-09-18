@@ -60,19 +60,15 @@ def prepare_app(filename, replacements, rhosts):
     """ """
     # Load datastore
     d = load_datastore(filename, replacements)
-    processes = []
     # Process this module as an application
     command = d['app']['command']
     arguments = d['app']['parameters'] if 'parameters' in d['app'] else ''
-    expr = d['app']['match'] if 'match' in d['app'] else None
     # Create a new process
     cmd = split('{c} {a}'.format(c=command, a=arguments))
     log.info('Creating app: {c}'.format(c=' '.join(cmd)))
-    process = Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True,
-                    bufsize=1)
-    processes.append((process, expr))
     # Success
-    return processes
+    return Popen(cmd, stdout=PIPE, stderr=PIPE, universal_newlines=True,
+                 bufsize=1)
 
 
 def prepare_jobs(rpc, module_type, module_name, filename, replacements,
@@ -149,8 +145,7 @@ def parse():
                      help='Host to run applications for')
     app.add_argument('--port', required=True,
                      help='Port to pass to application')
-    app.add_argument('--proto', default='tcp', choices=['tcp', 'udp'],
-                     help='network protocol for application')
+    app.add_argument('--word-list', required=True, help='Word list to use')
     # OWASP ZAProxy
     zap = subparsers.add_parser('zap', help='run OWASP ZAProxy modules')
     zap.set_defaults(callback=do_zap)
@@ -201,9 +196,9 @@ def zapapi(func):
     return wrapper_zapapi
 
 
-def enqueue_output(args, out, queue):
+def enqueue_output(module_name, out, queue):
     for line in iter(out.readline, b''):
-        queue.put((args[0], line))
+        queue.put((module_name, line))
     out.close()
 
 
@@ -214,51 +209,48 @@ def do_app(options, module_type, modules, msf):
     rhost = options.rhost
     # Set up template parameters
     replacements = {'port': options.port,
-                    'rhost': options.rhost}
-    # Dictionary with configuration replacements
-    processes = []
-    # Prepare execution of each application
-    for module_name, filename in modules:
-        processes.extend(prepare_app(filename, replacements, rhost))
+                    'rhost': options.rhost,
+                    'word_list': options.word_list}
     # Don't do anything if this is a dry run
     if options.dry_run:
         return
-    # Execute processes (waits till all processes are completed)
+    # Dictionary with configuration replacements
+    processes = {}
+    # Prepare execution of each application
+    for module_name, filename in modules:
+        processes[module_name] = prepare_app(filename, replacements, rhost)
     log.info('Running applications')
 
     q = Queue()
-    for p, e in processes:
+    for module_name, p in processes.items():
         # Start a monitoring thread for each Process
-        t = Thread(target=enqueue_output, args=(p.args, p.stdout, q))
-        t.daemon = True
+        t = Thread(target=enqueue_output, args=(module_name, p.stdout, q),
+                   daemon=True)
         t.start()
 
-    while(True):
+    while True:
         # Log all stdout for all running processes in a non-blocking manner
         try:
-            cmd, line = q.get_nowait()
+            module_name, data = q.get_nowait()
         except Empty:
             # Check if all processes are still running
-            if all([p.poll() is not None for p, e in processes]):
+            if all([p.poll() is not None for p in processes.values()]):
+                log.info('All applications terminated')
                 break
-            sleep(1)
+            # Log heart beat
+            running = [m for m, p in processes.items() if p.poll() is None]
+            log.info('Running application(s): {r}'.format(
+                     r=', '.join(running)))
+            # Wait until next heart beat
+            sleep(5)
         else:
             # Got line
-            if line is not '':
-                log.info('[{c}] {line}'.format(c=cmd, line=line.rstrip()))
-
-    # @TODO: If user quits, log any available application output
-
-    """
-    # exit_codes = run_app(processes)
-    # Running the applications can take a long time, re-authenticate
-    msf.login()
-    # Process each exit code
-    for i, p in enumerate(processes):
-        # Add result as a note for a host
-        data = exit_codes[i][0]  # stdout
-        msf.report_note(module_type, module_name, rhost, data.decode(), p[1])
-    """
+            if data is not '':
+                data = data.rstrip()
+                # Log to stdout/log
+                log.info('[{m}] {d}'.format(m=module_name, d=data))
+                # Send to msfconsole
+                msf.report_note(module_type, module_name, rhost, data)
 
 
 @msfrpc

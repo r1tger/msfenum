@@ -1,3 +1,0 @@
-[app]
-command="wpscan"
-parameters="--update --url {{ rhost }} --enumerate u --follow-redirection --proxy localhost:8080"

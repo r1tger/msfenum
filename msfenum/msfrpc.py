@@ -30,6 +30,7 @@ class MsfRPC:
         self.password = password
         self.dry_run = dry_run
         self.token = False
+        self._log_counter = {}
 
     def __enter__(self):
         """ """
@@ -73,46 +74,34 @@ class MsfRPC:
         self.request('auth.logout', {'token': self.token})
         self.token = False
 
-    def report_note(self, module_type, module_name, rhost, data, expr=None):
+    def report_note(self, module_type, module_name, rhost, data):
         """TODO: Docstring for report_note.
 
         :module_type: TODO
         :module_name: TODO
         :rhost: TODO
         :data: TODO
-        :expr: TODO
         :returns: TODO
         """
         try:
             # Try to resolve the rhosts to an ip address
             ip_address = gethostbyname(rhost)
-            log.info('Resolved {r} to {i}'.format(r=rhost, i=ip_address))
+            log.debug('Resolved {r} to {i}'.format(r=rhost, i=ip_address))
         except gaierror:
             # If it didn't work, keep going with rhost (may error out)
             ip_address = rhost
 
-        if expr:
-            # Process each line seperately if an expression to match is
-            # provided
-            d = []
-            for line in data.splitlines():
-                log.debug('Matching "{li}" against "{e}"'.format(e=expr,
-                                                                 li=line))
-                m = match(expr, line)
-                if m:
-                    d.append(' '.join(m[1].split()))
-            data = d
-        else:
-            # Wrap data in a list to simplify processing
-            data = [data]
-
-        # Process each note
-        for i, line in enumerate(data, start=0):
-            app_type = ('{t}.{n}.{i:03d}'.format(t=module_type, i=i,
-                        n=module_name.replace('/', '.')))
-            self.request('db.report_note', {'xopts': {'type': app_type,
-                                                      'host': ip_address,
-                                                      'data': line}})
+        # Create/increment counter for this app_type
+        if module_name not in self._log_counter:
+            self._log_counter[module_name] = 0
+        self._log_counter[module_name] += 1
+        # Log to msfconsole
+        app_type = '{t}.{m}.{c:03d}'.format(t=module_type,
+                                            m=module_name.replace('/', '.'),
+                                            c=self._log_counter[module_name])
+        self.request('db.report_note', {'xopts': {'type': app_type,
+                                                  'host': ip_address,
+                                                  'data': data}})
 
     def request(self, method, kwargs):
         # Create msgpack request

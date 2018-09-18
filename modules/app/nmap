@@ -1,3 +1,3 @@
 [app]
 command="nmap"
-parameters="-sC -sV -vv -oA msfenum {{ rhost }}"
+parameters="-sC -sV -vv {{ rhost }}"
