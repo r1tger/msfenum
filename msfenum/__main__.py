@@ -150,6 +150,9 @@ def parse():
     zap = subparsers.add_parser('zap', help='run OWASP ZAProxy modules')
     zap.set_defaults(callback=do_zap)
     zap.add_argument('--rhost', required=True, help='Host to run ZAProxy for')
+    # Reporting
+    reporting = subparsers.add_parser('report', help='report all notes')
+    reporting.set_defaults(callback=do_reporting)
     # Parse options
     return parser.parse_args()
 
@@ -284,6 +287,19 @@ def do_auxiliary(options, module_type, modules, msf):
         # Start a new Job for each prepared module
         msf.module.execute(module_type=module_type, module_name=module_name,
                            datastore=datastore)
+
+
+@msfrpc
+def do_reporting(options, module_type, modules, msf):
+    """ """
+    # Get all notes from msf
+    notes = msf.db.notes(xopts={})[b'notes']
+    # Sort by note type
+    notes.sort(key=lambda x: x[b'type'])
+    for note in notes:
+        # Display notes, remove any quotes
+        data = note[b'data'].decode()[1:-1]
+        log.info('[{t}] {d}'.format(t=note[b'type'].decode(), d=data))
 
 
 @zapapi
