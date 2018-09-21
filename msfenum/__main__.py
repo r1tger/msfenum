@@ -17,7 +17,7 @@ from jinja2 import Template
 from os import walk
 from os.path import join, relpath, abspath
 from shlex import split
-from subprocess import Popen, PIPE, TimeoutExpired
+from subprocess import Popen, PIPE
 from sys import exit
 from toml import loads
 from functools import wraps
@@ -196,7 +196,7 @@ def zapapi(func):
     return wrapper_zapapi
 
 
-def enqueue_output(module_name, out, queue):
+def enqueue_stdout(module_name, out, queue):
     for line in iter(out.readline, b''):
         queue.put((module_name, line))
     out.close()
@@ -224,7 +224,7 @@ def do_app(options, module_type, modules, msf):
     q = Queue()
     for module_name, p in processes.items():
         # Start a monitoring thread for each Process
-        t = Thread(target=enqueue_output, args=(module_name, p.stdout, q),
+        t = Thread(target=enqueue_stdout, args=(module_name, p.stdout, q),
                    daemon=True)
         t.start()
 
@@ -242,7 +242,7 @@ def do_app(options, module_type, modules, msf):
             log.info('Running application(s): {r}'.format(
                      r=', '.join(running)))
             # Wait until next heart beat
-            sleep(5)
+            sleep(10)
         else:
             # Got line
             if data is not '':
