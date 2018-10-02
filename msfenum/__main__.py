@@ -12,10 +12,10 @@
 from .msfrpc import MsfRPC
 from .zapapi import ZAPAPI
 
-from argparse import ArgumentParser
+from argparse import ArgumentParser, FileType, ArgumentTypeError
 from jinja2 import Template
 from os import walk
-from os.path import join, relpath, abspath
+from os.path import join, relpath, abspath, isdir
 from shlex import split
 from subprocess import Popen, PIPE
 from sys import exit
@@ -30,6 +30,16 @@ import logging
 log = logging.getLogger(__name__)
 
 LOG_FORMAT = '[%(asctime)s] [%(levelname)s] %(message)s'
+
+
+class PathType(object):
+    """ """
+    def __call__(self, s):
+        # All other arguments are used as file names
+        s = abspath(s)
+        if not isdir(s):
+            raise ArgumentTypeError('{d} is not a directory'.format(d=s))
+        return s
 
 
 def get_modules(modules_path, module_type):
@@ -115,13 +125,13 @@ def parse():
                         action="store_true", default=False)
     parser.add_argument('--dry-run', help='do a dry run, don\'t create Jobs',
                         action="store_true", default=False)
-    parser.add_argument('--log', help='log file')
+    parser.add_argument('--log', type=FileType('rw'), help='log file')
     parser.add_argument('--username', default='msf', help='RPC username')
     parser.add_argument('--password', default='', help='RPC password')
     parser.add_argument('--host', default='localhost', help='RPC hostname')
     parser.add_argument('--api-key', default='', help='API key')
     parser.add_argument('--modules', default='', required=True,
-                        help='path to modules')
+                        type=PathType(), help='path to modules')
     parser.add_argument('--project', default='msfenum', help='project name')
     parser.add_argument('--threads', default=2, help='number of threads')
     parser.add_argument('--module', help='single module to execute')
