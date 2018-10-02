@@ -95,7 +95,7 @@ def logger(options):
         handler = logging.FileHandler(options.log)
     else:
         handler = logging.StreamHandler()
-    handler.setFormatter(logging.Formatter(LOG_FORMAT))
+    handler.setFormatter(logging.Formatter(LOG_FORMAT, datefmt='%H:%M:%S'))
     # Add handler to the root log
     logging.root.addHandler(handler)
     # Set log level
