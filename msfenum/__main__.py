@@ -212,6 +212,7 @@ def do_app(options, module_type, modules, msf):
     rhost = options.rhost
     # Set up template parameters
     replacements = {'port': options.port,
+                    'project': options.project,
                     'rhost': options.rhost,
                     'word_list': options.word_list}
     # Don't do anything if this is a dry run
